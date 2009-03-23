@@ -20,10 +20,11 @@ __usage__ = """
 To start mcbot:
 in linux:
    from the directory where you installed mcbot:
-          ./mcbot.py [-t|--testing]
+          python [-OO] ./mcbot.py [-t|--testing]
 in windows:
    dunno, don't care
 """
+
 def usage():
     print __usage__
 
@@ -86,38 +87,38 @@ sys.stderr = errors
 def printerr(msg):
     sys.stderr.write(msg + '\n')
 
-class CommandHandler(object):
+class MCBot(icsbot.IcsBot):
     """
     """
-    def __init__(self, bot):
-        self._bot = bot
+    def __init__(self, qtell_dummy=False, qtell_width=78, interface='mcbot', unmatched_log=None, tell_logger=None):
+        super(MCBot, self).__init__()
         self._tsn = 0
-        self._compcomms = dict(
+        self._compcomms = {
 
-            batchrun = (self.do_batchrun,           # method to register
-                        '',                         # first fics command
-                        None,                       # callback when answer comes in
-                        lambda usr, tags: str(usr).lower() == admin),
+            'batchrun': (self.do_batchrun,           # method to register
+                         '',                         # first fics command
+                         None,                       # callback when answer comes in
+                         lambda usr, tags: str(usr).lower() == admin),
 
-            whatson = (self.do_whatson,
-                       'inchannel 177',
-                       self.whatson_parse_inchannel,
-                       lambda usr, tags: True)
-            )
+            'whatson' : (self.do_whatson,
+                         'inchannel 177',
+                         self.whatson_parse_inchannel,
+                         lambda usr, tags: True)
+            }
         # send pre-login commands
-        bot.send('set style 12')
-        bot.send('set seek 0')
-        bot.send('set interface MonkeyClub Bot(mcbot)')
+        self.send('set style 12')
+        self.send('set seek 0')
+        self.send('set interface MonkeyClub Bot(mcbot)')
         # bot.send('tell 177 Remember to "set noescape 0" before you start a tl game..')
         # bot.send('tell 177 or you risk forfeit by disconnection.')
 
-        bot.reg_comm('(?P<usr>[a-zA-Z]{3,17})(?:\([A-Z]+\))*\((?P<channel>[0-9]{1,3})\): (?P<message>.*)', self.respond_channel_tell)
+        self.reg_comm('(?P<usr>[a-zA-Z]{3,17})(?:\([A-Z]+\))*\((?P<channel>[0-9]{1,3})\): (?P<message>.*)', self.respond_channel_tell)
 
-        bot.reg_comm('(?P<usr>[a-zA-Z]{3,17})(?:\([A-Z]+\))*\: (?P<message>.*)', self.respond_personal_tell)
+        self.reg_comm('(?P<usr>[a-zA-Z]{3,17})(?:\([A-Z]+\))*\: (?P<message>.*)', self.respond_personal_tell)
 
         # register bot commands
         for key, (method, command, callback, verify) in self._compcomms.iteritems():
-            self._bot.reg_tell(key, method, verify)
+            self.reg_tell(key, method, verify)
         
     def get_tsn(self):
         return self._tsn
@@ -204,7 +205,7 @@ class CommandHandler(object):
                       kwargs.get('compcomm', 'No'),
                       kwargs.get('command'),
                       kwargs.get('last', 'No')))
-            self._bot.execute(kwargs['command'], self.handle_response, args, kwargs)
+            self.execute(kwargs['command'], self.handle_response, args, kwargs)
 
     def handle_batch_file(self, filename, usr):
         """
@@ -282,7 +283,7 @@ class CommandHandler(object):
                               newkwargs.get('command'),
                               newkwargs.get('last', 'No')))
 
-                    self._bot.execute(newkwargs['command'], self.handle_response, args, newkwargs)
+                    self.execute(newkwargs['command'], self.handle_response, args, newkwargs)
             # else:
             #     re_inchan03 = re.compile('[0-9]+ players are in channel %s.' % (channel))
             #     result = re_inchan03.match(line)
@@ -325,7 +326,7 @@ class CommandHandler(object):
                 assert kwargs.get('blogger')
                 kwargs.get('blogger').write(status)
             else:
-                self._bot.send('tell %s %s' % ('177', status))
+                self.send('tell %s %s' % ('177', status))
                 
     def do_whatson(self, usr, args, tag):
         # printerr('usr = %s%s; command = %s %s' % 
@@ -348,16 +349,14 @@ class CommandHandler(object):
                   kwargs.get('compcomm', 'No'),
                   kwargs.get('command'),
                   kwargs.get('last', 'No')))
-        self._bot.execute(command, self.handle_response, args, kwargs)
+        self.execute(command, self.handle_response, args, kwargs)
         printerr("-----")
 
  
 # Main loop in case of disconnections, just recreating the bot right now.
 # Should not actually be necessary.
 while True:
-    bot = icsbot.IcsBot(qtell_dummy=True, tell_logger=tell_logger)
-
-    ch = CommandHandler(bot)
+    bot = MCBot(qtell_dummy=True, tell_logger=tell_logger)
 
     # 
     # icsbot.status.Status(bot)
