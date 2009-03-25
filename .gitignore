@@ -21,3 +21,5 @@ tell.log
 reset_HEAD
 timer1
 *~
+*.pyc
+*.pyo

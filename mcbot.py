@@ -20,7 +20,10 @@ __usage__ = """
 To start mcbot:
 in linux:
    from the directory where you installed mcbot:
-          python [-OO] ./mcbot.py [-t|--testing]
+          python [-OO] ./mcbot.py [-h|--help] [-t|--testing]
+                 -OO : no debugging
+                 without -OO debugging info is logged in ./mcbot.log
+                 -t|--testing: use test login data from logintestdata.py
 in windows:
    dunno, don't care
 """
@@ -85,7 +88,8 @@ sys.stderr = errors
 # sys.stdout = errors
 
 def printerr(msg):
-    sys.stderr.write(msg + '\n')
+    if __debug__:
+        sys.stderr.write(msg + '\n')
 
 class MCBot(icsbot.IcsBot):
     """
@@ -98,7 +102,7 @@ class MCBot(icsbot.IcsBot):
             'batchrun': (self.do_batchrun,           # method to register
                          '',                         # first fics command
                          None,                       # callback when answer comes in
-                         lambda usr, tags: str(usr).lower() == admin),
+                         lambda usr, tags: str(usr).lower() in [me, admin]),
 
             'whatson' : (self.do_whatson,
                          'inchannel 177',
@@ -117,9 +121,13 @@ class MCBot(icsbot.IcsBot):
         self.reg_comm('(?P<usr>[a-zA-Z]{3,17})(?:\([A-Z]+\))*\: (?P<message>.*)', self.respond_personal_tell)
 
         # register bot commands
-        for key, (method, command, callback, verify) in self._compcomms.iteritems():
-            self.reg_tell(key, method, verify)
+        for key, (method, command, callback, privilege) in self._compcomms.iteritems():
+            self.reg_tell(key, method, privilege)
         
+        # timed commands
+        t = time.time()
+        self.timer(t, self.timer01, t)
+
     def get_tsn(self):
         return self._tsn
 
@@ -140,6 +148,7 @@ class MCBot(icsbot.IcsBot):
         return self._compcomms[command]
 
     def respond_channel_tell(self, matches):
+        printerr(' > respond_channel_tell')
         usr = matches.group('usr')
         channel = matches.group('channel')
         message = matches.group('message')
@@ -148,35 +157,43 @@ class MCBot(icsbot.IcsBot):
         return None
 
     def respond_personal_tell(self, matches):
+        printerr(' > respond_personal_tell')
         usr = matches.group('usr')
         message = matches.group('message')
-        printerr('usr = %s; message = %s' % (usr, message))
+        # printerr('usr = %s; message = %s' % (usr, message))
         # return 'tell %s %s' % (admin, matches.group(0))
         return None
 
     def handle_response(self, data, args, kwargs):
-        printerr('(R)<-tsn=%d; batchrun=%s; compcomm=%s; command=%s; last=%s' %
+        printerr(' > handle_response')
+        printerr('(R)<-tsn=%d; batchrun=%s; compcomm=%s; command=%s' %
                  (kwargs.get('tsn'), kwargs.get('batchrun', 'No'),
                   kwargs.get('compcomm', 'No'),
-                  kwargs.get('command'),
-                  kwargs.get('last', 'No')))
+                  kwargs.get('command')
+                  ))
         # printerr('kwargs = %s' % (repr(kwargs)))
         # printerr('data = %s' % (repr(data)))
         if kwargs.get('callback'):
             kwargs.get('callback')(data, args, kwargs)
         else:
             if kwargs.get('batchrun'):
-                assert kwargs.get('blogger')
+                # assert kwargs.get('blogger')
                 data = data.split('\n\r')
                 # printerr('data = %s' % repr(data))
                 for line in data:
-                    kwargs['blogger'].write('%s\n' % line)
+                    if kwargs['blogger']:
+                        kwargs['blogger'].write('%s\n' % line)
+                    else:
+                        pass
+                        # self.send('tell %s %s' % ('177', line))
                 # if kwargs.get('last'):
                 #     kwargs['blogger'].close()
                     
         printerr('---')
 
     def submit_batch_commands(self, lines, usr, blogger):
+        printerr(' > submit_batch_commands')
+
         count = 0
         for index, item in enumerate(lines):
             args=None
@@ -184,38 +201,40 @@ class MCBot(icsbot.IcsBot):
                 batchrun = True,
                 usr = str(usr),
                 tsn = self.get_new_tsn(),
-                asn = 1,
                 timestamp = time.time(),
                 command = item,
                 blogger = blogger
                 )
             command = item.split()[0]
             if self.is_compcomm(command):
-                method, command, callback, verify = self.get_compcomm_definition(command)
+                method, command, callback, privilege = self.get_compcomm_definition(command)
                 kwargs['compcomm'] = item
                 kwargs['command'] = command
                 kwargs['callback'] = callback
-            if index == len(lines) - 1:
-                kwargs['last'] = True
             printerr('submit %s' % item)
-            blogger.write('submit %s\n' % kwargs['command'])
+            if blogger:
+                blogger.write('submit %s\n' % kwargs['command'])
 
-            printerr('(S)->tsn=%d; batchrun=%s; compcomm=%s; command=%s; last=%s' %
+            printerr('(S)->tsn=%d; batchrun=%s; compcomm=%s; command=%s' %
                      (kwargs.get('tsn'), kwargs.get('batchrun', 'No'),
                       kwargs.get('compcomm', 'No'),
-                      kwargs.get('command'),
-                      kwargs.get('last', 'No')))
+                      kwargs.get('command')
+                      ))
             self.execute(kwargs['command'], self.handle_response, args, kwargs)
 
     def handle_batch_file(self, filename, usr):
         """
         """
         # printerr("reading commands from file '%s'" % filename)
+        printerr(' > handle_batch_file')
         try: 
             f = None
             f = open(filename, 'rU')
-            blogger = Log(filename + '.log')
-            blogger.write('reading commands from file \'%s\'\n' % filename)
+            if filename.startswith('timer'):
+                blogger = None
+            else:
+                blogger = Log(filename + '.log')
+                blogger.write('reading commands from file \'%s\'\n' % filename)
             lines = []
             for line in f.readlines():
                 line = line.rstrip()
@@ -239,6 +258,7 @@ class MCBot(icsbot.IcsBot):
                 f.close()
 
     def do_batchrun(self, usr, args, tag):
+        printerr(' > do_batchrun')
         # printerr('usr = %s%s; command = %s %s' % 
         #          (str(usr).lower(), str(tag), 'batchrun', str(args)))
         
@@ -251,11 +271,12 @@ class MCBot(icsbot.IcsBot):
                 printerr("-----")
 
     def whatson_parse_inchannel(self, data, args, kwargs):
-        printerr('(R)<-tsn=%d; batchrun=%s; compcomm=%s; command=%s; last=%s' %
+        printerr(' > whatson_parse_inchannel')
+        printerr('(R)<-tsn=%d; batchrun=%s; compcomm=%s; command=%s' %
                  (kwargs.get('tsn'), kwargs.get('batchrun', 'No'),
                   kwargs.get('compcomm', 'No'),
-                  kwargs.get('command'),
-                  kwargs.get('last', 'No')))
+                  kwargs.get('command')
+                  ))
         data = data.split('\n\r')
         # printerr('number of lines: %d' % (len(data)))
         for line in data:
@@ -270,20 +291,28 @@ class MCBot(icsbot.IcsBot):
                 result=re_inchan02.findall(handles)
                 printerr('channel = %s' % (channel))
                 printerr('handles = %s' % repr(result))
+                usr = kwargs.get('usr')
+                batchrun = kwargs.get('batchrun')
+                timestamp = time.time()
+                compcomm = kwargs.get('compcomm')
+                callback = self.whatson_parse_finger
                 for handle in result:
-                    newkwargs = copy.copy(kwargs)
-                    newkwargs['asn'] += 1
-                    newkwargs['timestamp'] = time.time()
-                    newkwargs['command'] = 'finger ' + handle
-                    newkwargs['callback'] = self.whatson_parse_finger
+                    tsn = self.get_new_tsn()
+                    command = 'finger %s' % handle
             
-                    printerr('(S)->tsn=%d; batchrun=%s; compcomm=%s; command=%s; last=%s' %
-                             (newkwargs.get('tsn'), newkwargs.get('batchrun', 'No'),
-                              newkwargs.get('compcomm', 'No'),
-                              newkwargs.get('command'),
-                              newkwargs.get('last', 'No')))
+                    printerr('(S)->tsn=%d; batchrun=%s; compcomm=%s; command=%s' %
+                             (tsn, batchrun, compcomm, command))
 
-                    self.execute(newkwargs['command'], self.handle_response, args, newkwargs)
+                    self.execute(command, 
+                                 self.whatson_parse_finger, 
+                                 [],
+                                 {'usr': usr,
+                                  'tsn': tsn,
+                                  'timestamp': timestamp,
+                                  'compcomm': compcomm,
+                                  'command': command,
+                                  'callback': callback
+                                  })
             # else:
             #     re_inchan03 = re.compile('[0-9]+ players are in channel %s.' % (channel))
             #     result = re_inchan03.match(line)
@@ -291,11 +320,12 @@ class MCBot(icsbot.IcsBot):
             #         printerr(line)
 
     def whatson_parse_finger(self, data, args, kwargs):
-        printerr('(R)<-tsn=%d; batchrun=%s; compcomm=%s; command=%s; last=%s' %
+        printerr(' > whatson_parse_finger')
+        printerr('(R)<-tsn=%d; batchrun=%s; compcomm=%s; command=%s' %
                  (kwargs.get('tsn'), kwargs.get('batchrun', 'No'),
                   kwargs.get('compcomm', 'No'),
-                  kwargs.get('command'),
-                  kwargs.get('last', 'No')))
+                  kwargs.get('command')
+                  ))
         data = data.split('\n\r')
         # printerr('number of lines: %d' % (len(data)))
         # for line in data:
@@ -326,32 +356,80 @@ class MCBot(icsbot.IcsBot):
                 assert kwargs.get('blogger')
                 kwargs.get('blogger').write(status)
             else:
-                self.send('tell %s %s' % ('177', status))
+                self.send('tell %s %s' % (kwargs.get('usr'), status))
                 
     def do_whatson(self, usr, args, tag):
+        printerr(' > do_whatson')
         # printerr('usr = %s%s; command = %s %s' % 
         #          (str(usr).lower(), str(tag), 'whatson', str(args)))
-        f, command, callback, verify = self.get_compcomm_definition('whatson')
-        # printerr('commands = %s' % repr(command))
+        compcomm = 'whatson'
+        f, command, callback, privilege = self.get_compcomm_definition(compcomm)
         tsn = self.get_new_tsn()
-        args=None
-        kwargs=dict(
-            usr = str(usr),
-            tsn = tsn,
-            asn = 1,
-            timestamp = time.time(),
-            compcom = 'whatson',
-            command = command,
-            callback = callback
-            )
-        printerr('(S)->tsn=%d; batchrun=%s; compcomm=%s; command=%s; last=%s' %
-                 (kwargs.get('tsn'), kwargs.get('batchrun', 'No'),
-                  kwargs.get('compcomm', 'No'),
-                  kwargs.get('command'),
-                  kwargs.get('last', 'No')))
-        self.execute(command, self.handle_response, args, kwargs)
+        batchrun = 'N'
+
+        printerr('(S)->tsn=%d; batchrun=%s; compcomm=%s; command=%s' %
+                 (tsn, batchrun, compcomm, command))
+
+        self.execute(command, 
+                     self.handle_response, 
+                     [], 
+                     {'usr': str(usr),
+                      'tsn': tsn,
+                      'timestamp': time.time(),
+                      'compcom': compcomm,
+                      'command': command,
+                      'callback': callback
+                      })
+
         printerr("-----")
 
+    def timer01_callback(self, data, args, kwargs):
+        printerr(' > timer01_callback')
+        printerr('(R)<-tsn=%d; batchrun=%s; compcomm=%s; command=%s' %
+                 (kwargs.get('tsn'), kwargs.get('batchrun', 'No'),
+                  kwargs.get('compcomm', 'No'),
+                  kwargs.get('command')
+                  ))
+
+        data = data.split('\n\r')
+        for line in data:
+            printerr('%s' % line)
+        re1 = re.compile('linuxchick tells you: (.*)')
+        for line in data:
+            if re_empty.match(line):
+                continue
+            if re1.match(line):
+                command = re1.match(line).group(1)
+                break
+            
+        tokens = command.split()
+            
+        if tokens[0] == 'batchrun':
+            self.do_batchrun(kwargs.get('usr'), ' '.join(tokens[1:]), '') 
+
+    def timer01(self, run_time):
+        printerr(' > timer01')
+        repeat = 60 * 30
+        tsn = self.get_new_tsn()
+        timestamp = time.time()
+        command = 'tell %s batchrun timer1' % me
+        compcomm = 'N'
+        batchrun = 'N'
+
+        printerr('(S)->tsn=%d; batchrun=%s; compcomm=%s; command=%s' %
+                 (tsn, batchrun, compcomm, command))
+
+        self.execute(command, 
+                     self.timer01_callback, 
+                     [], 
+                     {'usr': me, 
+                      'tsn': tsn, 
+                      'timestamp': time.time(), 
+                      'blogger': None,
+                      'command': command
+                      })
+
+        self.timer(run_time + repeat, self.timer01, run_time + repeat)
  
 # Main loop in case of disconnections, just recreating the bot right now.
 # Should not actually be necessary.
