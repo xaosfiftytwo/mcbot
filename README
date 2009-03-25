@@ -12,6 +12,8 @@ dependencies:
 ~~~~~~~~~~~~~
 icsbot: git://github.com/seberg/icsbot.git
 
+	Kudos to seberg for providing the framework... 
+
 installation:
 ~~~~~~~~~~~~~
 download icsbot and mcbot from github 

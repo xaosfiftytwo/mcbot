@@ -91,11 +91,14 @@ def printerr(msg):
     if __debug__:
         sys.stderr.write(msg + '\n')
 
+if __debug__:
+    import instrumentation as instr
+
 class MCBot(icsbot.IcsBot):
     """
     """
-    def __init__(self, qtell_dummy=False, qtell_width=78, interface='mcbot', unmatched_log=None, tell_logger=None):
-        super(MCBot, self).__init__()
+    def __init__(self, qtell_dummy=True, unmatched_log=None, tell_logger=tell_logger):
+        super(MCBot, self).__init__(qtell_dummy=True, unmatched_log=None, tell_logger=tell_logger)
         self._tsn = 0
         self._compcomms = {
 
@@ -121,12 +124,12 @@ class MCBot(icsbot.IcsBot):
         self.reg_comm('(?P<usr>[a-zA-Z]{3,17})(?:\([A-Z]+\))*\: (?P<message>.*)', self.respond_personal_tell)
 
         # register bot commands
-        for key, (method, command, callback, privilege) in self._compcomms.iteritems():
-            self.reg_tell(key, method, privilege)
+        for key, (method, command, callback, privilege_check) in self._compcomms.iteritems():
+            self.reg_tell(key, method, privilege_check)
         
         # timed commands
         t = time.time()
-        self.timer(t, self.timer01, t)
+        self.timer(t + 60 * 60, self.timer01, t)
 
     def get_tsn(self):
         return self._tsn
@@ -207,7 +210,7 @@ class MCBot(icsbot.IcsBot):
                 )
             command = item.split()[0]
             if self.is_compcomm(command):
-                method, command, callback, privilege = self.get_compcomm_definition(command)
+                method, command, callback, privilege_check = self.get_compcomm_definition(command)
                 kwargs['compcomm'] = item
                 kwargs['command'] = command
                 kwargs['callback'] = callback
@@ -258,6 +261,11 @@ class MCBot(icsbot.IcsBot):
                 f.close()
 
     def do_batchrun(self, usr, args, tag):
+        """
+        Usage: batchrun file [file..]
+        Executes all fics commands in 'file' in batch, and logs
+        the results in file.log
+        """
         printerr(' > do_batchrun')
         # printerr('usr = %s%s; command = %s %s' % 
         #          (str(usr).lower(), str(tag), 'batchrun', str(args)))
@@ -359,11 +367,16 @@ class MCBot(icsbot.IcsBot):
                 self.send('tell %s %s' % (kwargs.get('usr'), status))
                 
     def do_whatson(self, usr, args, tag):
+        """
+        For each handle found in channel 177 execute 'finger handle', extract
+        some information and show the result in a private tell to the user that
+        submitted the 'whatson' command.
+        """
         printerr(' > do_whatson')
         # printerr('usr = %s%s; command = %s %s' % 
         #          (str(usr).lower(), str(tag), 'whatson', str(args)))
         compcomm = 'whatson'
-        f, command, callback, privilege = self.get_compcomm_definition(compcomm)
+        f, command, callback, privilege_check = self.get_compcomm_definition(compcomm)
         tsn = self.get_new_tsn()
         batchrun = 'N'
 
@@ -434,12 +447,25 @@ class MCBot(icsbot.IcsBot):
 # Main loop in case of disconnections, just recreating the bot right now.
 # Should not actually be necessary.
 while True:
+    if __debug__:
+        m0 = instr.memory()
+        r0 = instr.resident()
+        s0 = instr.stacksize()
+
     bot = MCBot(qtell_dummy=True, tell_logger=tell_logger)
 
     # 
-    # icsbot.status.Status(bot)
+    icsbot.status.Status(bot)
+    usrs = bot['usrs']
 
-    # usrs = bot['usrs']
+    if __debug__:
+        m1 = instr.memory(since=m0)
+        r1 = instr.resident(since=r0)
+        s1 = instr.stacksize(since=s0)
+        
+        printerr('vitual memory usage increment = %d' % m1)
+        printerr('real memory usag increment = %d' % r1)
+        printerr('stack size increment = %d' % s1)
 
     try:
         bot.connect(me, password)
@@ -463,7 +489,7 @@ while True:
         continue
     
     print 'Connected to FICS.'
-    
+
     try:
         bot.run()
     except icsbot.ConnectionClosed, msg:
