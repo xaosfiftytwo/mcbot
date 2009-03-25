@@ -1,0 +1,59 @@
+mcbot
+-----
+
+mcbot is a bot developed to help administer the Monkey Club chessteam
+on FICS (Free Internet Chess server)
+
+Monkey Club: http://monkeychess.net
+FICS       : http://www.freechess.org
+mcbot      : git://github.com/xaosfiftytwo/mcbot.git
+
+dependencies:
+~~~~~~~~~~~~~
+icsbot: git://github.com/seberg/icsbot.git
+
+installation:
+~~~~~~~~~~~~~
+download icsbot and mcbot from github 
+extract mcbot and icsbot in /tmp
+mkdir mcbot (in path of your choice)
+from extracted mcbot:
+     cp -v *.py <your-install-path>/mcbot/
+mkdir mcbot/icsbot
+from extracted icsbot:
+     cp -av * <your install-path>/mcbot/icsbot/
+
+To run icsbot you need to register 2 'handles' on FICS, one for the bot 
+itself and one for the administator of the bot. 
+See FICS website for registration procedure.
+
+Modify logindata.py with your registration information, and you are
+ready to roll.
+
+startup:
+~~~~~~~~
+      from mcbot dir: python mcbot.py --help
+
+for help.
+
+features:
+~~~~~~~~~
+To talk to the bot: 
+   from the console of a client connected to FICS as the admin:
+   	tell <handle-of-bot> <command>
+   
+
+- batchrun: run a batch of FICS commands.
+  . ceate a file of fics commands in your install path
+  . in the client console, connected as admin:
+
+       tell <handle-of-bot> batchrun <filename>
+
+  . results will be logged in <filename>.log
+
+- whatson : are any of the club members playing a game?
+  
+	tell <handle-of-bot> whatson
+
+  You get the result as a series of private tells.
+
