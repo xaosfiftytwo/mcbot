@@ -86,7 +86,6 @@ class Log(object):
         self.errors.flush()
 
     def close(self):
-        self.errors.flush()
         self.errors.close()
 
 errors = Log('mcbot.log')
@@ -107,6 +106,13 @@ class MCBot(icsbot.IcsBot):
     def __init__(self, qtell_dummy=True, unmatched_log=None, tell_logger=tell_logger):
         super(MCBot, self).__init__(qtell_dummy=True, unmatched_log=None, tell_logger=tell_logger)
         self._tsn = 0
+
+        """
+        Compound Commands:
+        Non-fics commands specific for this bot.
+        Usually consist of a chain of fics commands, passing the results along
+        and combining them.
+        """
         self._compcomms = {
 
             'batchrun': (self.do_batchrun,           # method to register
@@ -119,6 +125,17 @@ class MCBot(icsbot.IcsBot):
                          self.whatson_parse_inchannel,
                          lambda usr, tags: True)
             }
+
+        """
+        _tracker is a dict, used to keep track of ongoing batchruns.
+        The keys are batchids, value is another dict with (key, value) = (tsn, True)
+        (value has no importance, existence of the key means
+        that corresponding transaction is ongoing). Allows to detect when
+        all commands of a batch have terminated, and the log file for that
+        batch can be closed.
+        """
+        self._tracker = dict()
+
         # send pre-login commands
         self.send('set style 12')
         self.send('set seek 0')
@@ -157,6 +174,64 @@ class MCBot(icsbot.IcsBot):
 
     def get_compcomm_definition(self, command):
         return self._compcomms[command]
+
+    
+    # methods used for batch transaction tracking
+    
+
+    def track_batch(self, batchid):
+        # printerr(' > track_batch')
+        # printerr('batchid=%s; _tracker=%s' % (batchid, self._tracker))
+        self._tracker[batchid] = dict()
+        return self._tracker[batchid]
+
+    def track_batch_trans(self, batchid, tsn):
+        # printerr(' > track_batch_trans')
+        # printerr('batchid=%s; tsn=%s;_tracker=%s' % (batchid, tsn, self._tracker))
+        d = self._tracker.get(batchid, None)
+        if not d:
+            d = self.track_batch(batchid)
+        assert(d, 'track tsn: batchid not in tracker')
+        d[tsn] = True
+
+    def untrack_batch_trans(self, batchid, tsn):
+        # printerr(' > untrack_batch_trans')
+        # printerr('batchid=%s; tsn=%s;_tracker=%s' % (batchid, tsn, self._tracker))
+        # d = self._tracker.get(batchid, None)
+        assert( d, 'untrack tsn: batchid not in tracker') 
+        printerr('d=%s' % str(d))
+        assert( tsn in d, 'untrack tsn: tsn not in tracker')
+        del d[tsn]
+        printerr('batchid=%s; tsn=%s;_tracker=%s' % (batchid, tsn, self._tracker))
+
+    def untrack_batch(self, batchid):
+        # printerr(' > untrack_batch')
+        # printerr('batchid=%s; _tracker=%s' % (batchid, self._tracker))
+        d = self._tracker.get(batchid, None)
+        assert( d, 'untrack batch: batchid not in tracker') 
+        assert( len(d) == 0, 'untrack batch: active transactions')
+        del self._tracker[batchid]
+        printerr('batchid=%s; _tracker=%s' % (batchid, self._tracker))
+
+    def track_any_active_trans(self, batchid):
+        # printerr('batchid=%s; _tracker=%s' % (batchid, self._tracker))
+        # printerr(' > track_active_trans')
+        d = self._tracker.get(batchid, None)
+        assert( d, 'untrack batch: batchid not in tracker') 
+        return len(d)
+
+    # general usage methods
+
+    # def execute(self, command, handler, *args, **kwargs):
+    #     """Override parent execute method to make sure that any command
+    #     executed in batch gets tracked.
+    #     """
+    #     printerr('> execute')
+    #     batchid = kwargs.get('batchid', None)
+    #     if batchid:
+    #         self.track_batch_trans(batchid, kwargs.get('tsn', None))
+
+    #     super().execute(self, command, handler, *args, **kwargs)
 
     def format_kwargs(self, kwargs):
         b = kwargs.get('blogger', None)
@@ -198,15 +273,32 @@ class MCBot(icsbot.IcsBot):
     def handle_response(self, data, args, kwargs):
         """
         Handle reponse to normal FICS commands, submitted by batch
+        Warning!
+        responses to timed commands are handled here also, but arent logged.
         """
         printerr(' > handle_response')
         printerr('(R)<-%s' % self.format_kwargs(kwargs))
         printerr('data = %s' % (repr(data)))
+        batchid = kwargs.get('batchid', None)
         blogger = kwargs.get('blogger', None)
+        assert(batchid, 'no batchid?')
+        # assert(blogger, 'no blogger?')
         data = data.split('\n\r')
         for line in data:
+            if re_empty.match(line):
+                continue
             if blogger:
-                self.do_log(blogger, '\n%s' % line)
+                self.do_log(blogger, '%s' % line)
+            else:
+                printerr(line)
+
+        self.untrack_batch_trans(batchid, kwargs.get('tsn'))
+
+        if self.track_any_active_trans(batchid) == 0:
+            self.untrack_batch(batchid)
+            if blogger:
+                printerr('close log file now..')
+                blogger.close()
                     
         printerr('---')
 
@@ -216,6 +308,7 @@ class MCBot(icsbot.IcsBot):
         usr = str(usr)
         timestamp = time.time()
         batchid = None
+        
         for line in lines:
             tsn = self.get_new_tsn()
             if not batchid:
@@ -224,14 +317,19 @@ class MCBot(icsbot.IcsBot):
             compcomm = line.split()[0]
             if self.is_compcomm(compcomm):
                 method, command, callback, privilege_check = self.get_compcomm_definition(compcomm)
+                if blogger:
+                    self.do_log(blogger, 'submit %s' % line)
             else:
                 compcomm = None
                 callback = self.handle_response
+            
             if blogger:
                 self.do_log(blogger, 'submit %s' % command)
 
             printerr('(S)->tsn=%d; batchid=%d; compcomm=%s; command=%s' %
                      (tsn, batchid, compcomm, command))
+
+            self.track_batch_trans(batchid, tsn)
 
             self.execute(command, 
                          callback, 
@@ -301,6 +399,12 @@ class MCBot(icsbot.IcsBot):
         printerr(' > whatson_parse_inchannel')
         printerr('(R)<-%s' % self.format_kwargs(kwargs))
 
+        batchid = kwargs.get('batchid', None)
+        blogger = kwargs.get('blogger', None)
+
+        if batchid:
+            self.untrack_batch_trans(batchid, kwargs.get('tsn'))
+
         data = data.split('\n\r')
         # printerr('number of lines: %d' % (len(data)))
         # for line in data:
@@ -318,8 +422,6 @@ class MCBot(icsbot.IcsBot):
                 printerr('channel = %s' % (channel))
                 printerr('handles = %s' % repr(result))
                 usr = kwargs.get('usr')
-                batchid = kwargs.get('batchid')
-                blogger = kwargs.get('blogger')
                 timestamp = time.time()
                 compcomm = kwargs.get('compcomm')
                 callback = self.whatson_parse_finger
@@ -330,6 +432,9 @@ class MCBot(icsbot.IcsBot):
             
                     printerr('(S)->tsn=%d; batchid=%s; compcomm=%s; command=%s' %
                              (tsn, batchid, compcomm, command))
+
+                    if batchid:
+                        self.track_batch_trans(batchid, tsn)
 
                     self.execute(command, 
                                  callback, 
@@ -342,10 +447,25 @@ class MCBot(icsbot.IcsBot):
                                   'command': command,
                                   'blogger': blogger
                                   })
+            else:
+                printerr(line)
 
+        if batchid:
+            if not self.track_any_active_trans(batchid):
+                self.untrack_batch(batchid)
+                if blogger:
+                    printerr('close log file now..')
+                    blogger.close()
+        
     def whatson_parse_finger(self, data, args, kwargs):
         printerr(' > whatson_parse_finger')
         printerr('(R)<-%s' % self.format_kwargs(kwargs))
+
+        batchid = kwargs.get('batchid', None)
+        blogger = kwargs.get('blogger', None)
+
+        if batchid:
+            self.untrack_batch_trans(batchid, kwargs.get('tsn'))
 
         re1 = re.compile('\((.*)\)')
         re2 = re.compile('\s+rating')
@@ -370,12 +490,17 @@ class MCBot(icsbot.IcsBot):
         if message:
             if not message.startswith('%s is ' % handle):
                 message = '%s is %s' % (handle, message)
-            if kwargs.get('batchid', None):
-                blogger = kwargs.get('blogger', None)
-                if blogger:
-                    self.do_log(blogger, message)
+
+            if batchid and blogger:
+                self.do_log(blogger, message)
             else:
                 self.do_tell(kwargs.get('usr'), message)
+
+        if batchid:
+            if not self.track_any_active_trans(batchid):
+                self.untrack_batch(batchid)
+                printerr('close log file now..')
+                blogger.close()
                 
     def do_whatson(self, usr, args, tag):
         """
@@ -412,7 +537,7 @@ class MCBot(icsbot.IcsBot):
         data = data.split('\n\r')
         for line in data:
             printerr('%s' % line)
-        re1 = re.compile('linuxchick tells you: (.*)')
+        re1 = re.compile(r'%s tells you: (.*)' % me)
         for line in data:
             if re_empty.match(line):
                 continue
