@@ -90,6 +90,7 @@ class Log(object):
 
 errors = Log('mcbot.log')
 
+
 sys.stderr = errors
 # sys.stdout = errors
 
@@ -141,12 +142,27 @@ class MCBot(icsbot.IcsBot):
         self.send('set seek 0')
         ## self.send('set interface MonkeyClub Bot(mcbot)')
         self.send('set interface BabasChess 4.0 (build 12274)')
+        self.send('+ch 85')
+        self.send('+ch 101')
+        self.send('+ch 177')
         # bot.send('tell 177 Remember to "set noescape 0" before you start a tl game..')
         # bot.send('tell 177 or you risk forfeit by disconnection.')
+
+        # Warning:
+        # Order of registration is important
+
+        self.channel_loggers = {'85': Log('channel85_tells.log'),
+                                '101': Log('channel101_tells.log'),
+                                '177': Log('channel177_tells.log'),
+                                }
 
         self.reg_comm('(?P<usr>[a-zA-Z]{3,17})(?:\([A-Z]+\))*\((?P<channel>[0-9]{1,3})\): (?P<message>.*)', self.respond_channel_tell)
 
         self.reg_comm('(?P<usr>[a-zA-Z]{3,17})(?:\([A-Z]+\))*\: (?P<message>.*)', self.respond_personal_tell)
+
+        if __debug__:
+            self.alogger = Log('anything.log')
+            self.reg_comm('(?P<message>^.*$)', self.respond_to_anything)
 
         # register bot commands
         for key, (method, command, callback, privilege_check) in self._compcomms.iteritems():
@@ -154,7 +170,7 @@ class MCBot(icsbot.IcsBot):
         
         # timed commands
         t = time.time()
-        self.timer(t + 60 * 10, self.timer01, t)
+        self.timer(t + 1, self.timer01, t)
 
     def get_tsn(self):
         return self._tsn
@@ -197,7 +213,7 @@ class MCBot(icsbot.IcsBot):
     def untrack_batch_trans(self, batchid, tsn):
         # printerr(' > untrack_batch_trans')
         # printerr('batchid=%s; tsn=%s;_tracker=%s' % (batchid, tsn, self._tracker))
-        # d = self._tracker.get(batchid, None)
+        d = self._tracker.get(batchid, None)
         assert( d, 'untrack tsn: batchid not in tracker') 
         printerr('d=%s' % str(d))
         assert( tsn in d, 'untrack tsn: tsn not in tracker')
@@ -253,14 +269,28 @@ class MCBot(icsbot.IcsBot):
         printerr('(T)-(%s): %s' % (recipient, message))
         self.send('tell %s %s' % (recipient, message))
 
+    def respond_to_anything(self,matches):
+        # printerr(' > respond_to_anything')
+        message = matches.group('message')
+        # printerr('usr = %s; message = %s' % (usr, message))
+        # return 'tell %s %s' % (admin, matches.group(0))
+        self.alogger.write('%s\n' % message)
+
     def respond_channel_tell(self, matches):
-        printerr(' > respond_channel_tell')
+        # printerr(' > respond_channel_tell')
         usr = matches.group('usr')
         channel = matches.group('channel')
         message = matches.group('message')
-        printerr('usr = %s; channel = %s; message = %s' % (usr, channel, message))
+
+        usr_channel = '%s(%s)' % (usr, channel)
+        if channel in self.channel_loggers.keys():
+            self.channel_loggers[channel].write('%s%s\n' % (usr_channel.ljust(22), message))
+
+        if usr == 'TeamLeague' and channel == '101' and message.startswith('Game started:'):
+            # if message.find('Monkey') > -1:
+            self.send('tell 177 %s' % message)
+                
         # return 'tell %s %s' % (admin, matches.group(0))
-        return None
 
     def respond_personal_tell(self, matches):
         printerr(' > respond_personal_tell')
@@ -342,7 +372,7 @@ class MCBot(icsbot.IcsBot):
                           'compcomm': compcomm,
                           'command': command})
 
-    def handle_batch_file(self, filename, usr):
+    def handle_batch_file(self, filename, usr, logging):
         """
         """
         # printerr("reading commands from file '%s'" % filename)
@@ -350,11 +380,11 @@ class MCBot(icsbot.IcsBot):
         try: 
             f = None
             f = open(filename, 'rU')
-            if filename.startswith('timer'):
-                blogger = None
-            else:
+            if logging:
                 blogger = Log(filename + '.log')
                 self.do_log(blogger, 'submit commands from file \'%s\'' % filename) 
+            else:
+                blogger = None
             lines = []
             for line in f.readlines():
                 line = line.rstrip()
@@ -379,7 +409,7 @@ class MCBot(icsbot.IcsBot):
 
     def do_batchrun(self, usr, args, tag):
         """
-        Usage: batchrun file [file..]
+        Usage: batchrun [ -log|-nolog] file [file..]
         Executes all fics commands in 'file' in batch, and logs
         the results in file.log
         """
@@ -388,11 +418,16 @@ class MCBot(icsbot.IcsBot):
         #          (str(usr).lower(), str(tag), 'batchrun', str(args)))
         
         arglist=str(args).split()
+        logging = True
+        if arglist[0] in ['-log', '-nolog']:
+            if arglist[0] == '-nolog':
+                logging = False
+            arglist = arglist[1:]
         if len(arglist) == 0:
-            printerr('** Usage: batchrun file [file...]')
+            printerr('** Usage: batchrun [ -log|-nolog ] file [file...]')
         else:
             for filename in arglist:
-                self.handle_batch_file(filename, str(usr))
+                self.handle_batch_file(filename, str(usr), logging)
                 printerr("-----")
 
     def whatson_parse_inchannel(self, data, args, kwargs):
@@ -530,48 +565,50 @@ class MCBot(icsbot.IcsBot):
 
         printerr("-----")
 
-    def timer01_callback(self, data, args, kwargs):
-        printerr(' > timer01_callback')
-        printerr('(R)<-%s' % self.format_kwargs(kwargs))
+    # def timer01_callback(self, data, args, kwargs):
+    #     printerr(' > timer01_callback')
+    #     printerr('(R)<-%s' % self.format_kwargs(kwargs))
 
-        data = data.split('\n\r')
-        for line in data:
-            printerr('%s' % line)
-        re1 = re.compile(r'%s tells you: (.*)' % me)
-        for line in data:
-            if re_empty.match(line):
-                continue
-            if re1.match(line):
-                command = re1.match(line).group(1)
-                break
+    #     data = data.split('\n\r')
+    #     for line in data:
+    #         printerr('%s' % line)
+    #     re1 = re.compile(r'%s tells you: (.*)' % me)
+    #     for line in data:
+    #         if re_empty.match(line):
+    #             continue
+    #         if re1.match(line):
+    #             command = re1.match(line).group(1)
+    #             break
             
-        tokens = command.split()
+    #     tokens = command.split()
             
-        if tokens[0] == 'batchrun':
-            self.do_batchrun(kwargs.get('usr'), ' '.join(tokens[1:]), '') 
+    #     if tokens[0] == 'batchrun':
+    #         self.do_batchrun(kwargs.get('usr'), ' '.join(tokens[1:]), '') 
 
     def timer01(self, run_time):
         printerr(' > timer01')
-        repeat = 60 * 30
-        tsn = self.get_new_tsn()
+        repeat = 60 * 60 * 2
+        # tsn = self.get_new_tsn()
         timestamp = time.time()
-        command = 'tell %s batchrun timer1' % me
-        compcomm = None
-        batchid = None
+        command = '-nolog timer1'
+        # compcomm = None
+        # batchid = None
 
-        printerr('(S)->tsn=%d; batchid=%s; compcomm=%s; command=%s' %
-                 (tsn, batchid, compcomm, command))
+        self.do_batchrun(me, command, '')
+ 
+        # printerr('(S)->tsn=%d; batchid=%s; compcomm=%s; command=%s' %
+        #          (tsn, batchid, compcomm, command))
 
-        self.execute(command, 
-                     self.timer01_callback, 
-                     [], 
-                     {'usr': me, 
-                      'tsn': tsn,
-                      'batchid': batchid,
-                      'timestamp': time.time(), 
-                      'blogger': None,
-                      'command': command
-                      })
+        # self.execute(command, 
+        #              self.timer01_callback, 
+        #              [], 
+        #              {'usr': me, 
+        #               'tsn': tsn,
+        #               'batchid': batchid,
+        #               'timestamp': time.time(), 
+        #               'blogger': None,
+        #               'command': command
+        #               })
 
         self.timer(timestamp + repeat, self.timer01, timestamp + repeat)
  
