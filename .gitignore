@@ -19,3 +19,12 @@ mcbot.log.keep
 *.bak
 batch*
 ssh-agent
+*.dat
+answers.txt
+archive.zip
+cfgfile.py
+keepalive
+mcborg.cfg
+mcborg.py
+version
+

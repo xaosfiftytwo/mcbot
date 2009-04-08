@@ -35,19 +35,22 @@ def usage():
 
 # handle command line options
 try:
-    opts, args = getopt.getopt(sys.argv[1:], "ht", ["help", "testing"])
+    opts, args = getopt.getopt(sys.argv[1:], "bht", ["borg", "help", "testing"])
 except getopt.GetoptError, err:
     # print help information and exit:
     print str(err) # will print something like "option -a not recognized"
     usage()
     sys.exit(2)
 testing = False
+borg    = False
 for o, a in opts:
     if o in ("-t", "--testing"):
         testing = True
     elif o in ("-h", "--help"):
         usage()
         sys.exit()
+    elif o in ("-b", "--borg"):
+        borg = True
     else:
         assert False, "unhandled option"
         
@@ -170,8 +173,14 @@ class MCBot(icsbot.IcsBot):
         
         # timed commands
         t = time.time()
-        self.timer(t + 1, self.timer01, t)
+        self.timer(t + 60 * 5, self.timer01, t)
+        # keep the connection with freechess server alive
+        self.timer(t + 1, self.keep_alive, t)
 
+        if borg:
+            import mcborg
+            self.myborg = mcborg.mcborg() 
+        
     def get_tsn(self):
         return self._tsn
 
@@ -289,6 +298,12 @@ class MCBot(icsbot.IcsBot):
         if usr == 'TeamLeague' and channel == '101' and message.startswith('Game started:'):
             # if message.find('Monkey') > -1:
             self.send('tell 177 %s' % message)
+
+        if borg:
+            if usr.lower() in ('zulugodetia', 'kirany', 'dermandarin', 'xaosfiftytwo', 'cjldx'):
+                reply = self.myborg.reply(message)
+                if not re_empty.match(reply):
+                    self.send('tell 177 %s' % reply)
                 
         # return 'tell %s %s' % (admin, matches.group(0))
 
@@ -565,52 +580,20 @@ class MCBot(icsbot.IcsBot):
 
         printerr("-----")
 
-    # def timer01_callback(self, data, args, kwargs):
-    #     printerr(' > timer01_callback')
-    #     printerr('(R)<-%s' % self.format_kwargs(kwargs))
-
-    #     data = data.split('\n\r')
-    #     for line in data:
-    #         printerr('%s' % line)
-    #     re1 = re.compile(r'%s tells you: (.*)' % me)
-    #     for line in data:
-    #         if re_empty.match(line):
-    #             continue
-    #         if re1.match(line):
-    #             command = re1.match(line).group(1)
-    #             break
-            
-    #     tokens = command.split()
-            
-    #     if tokens[0] == 'batchrun':
-    #         self.do_batchrun(kwargs.get('usr'), ' '.join(tokens[1:]), '') 
-
     def timer01(self, run_time):
         printerr(' > timer01')
         repeat = 60 * 60 * 2
-        # tsn = self.get_new_tsn()
         timestamp = time.time()
-        command = '-nolog timer1'
-        # compcomm = None
-        # batchid = None
-
-        self.do_batchrun(me, command, '')
- 
-        # printerr('(S)->tsn=%d; batchid=%s; compcomm=%s; command=%s' %
-        #          (tsn, batchid, compcomm, command))
-
-        # self.execute(command, 
-        #              self.timer01_callback, 
-        #              [], 
-        #              {'usr': me, 
-        #               'tsn': tsn,
-        #               'batchid': batchid,
-        #               'timestamp': time.time(), 
-        #               'blogger': None,
-        #               'command': command
-        #               })
-
+        self.do_batchrun(me, '-nolog timer1', '')
         self.timer(timestamp + repeat, self.timer01, timestamp + repeat)
+
+    def keep_alive(self, run_time):
+        printerr(' > keep_alive')
+        repeat = 60 * 55
+        timestamp = time.time()
+        self.do_batchrun(me, '-nolog keep_alive', '')
+        self.timer(timestamp + repeat, self.keep_alive, timestamp + repeat)
+
  
 # Main loop in case of disconnections, just recreating the bot right now.
 # Should not actually be necessary.
