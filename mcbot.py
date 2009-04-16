@@ -15,15 +15,14 @@ import icsbot.misc.regex as icsreg
 
 import getopt
 
-import copy
-
 __usage__ = """
 To start mcbot:
 in linux:
    from the directory where you installed mcbot:
           python [-O[O]] ./mcbot.py [-h|--help] [-t|--testing]
                  -O[O]       : no debugging
-                 without -O  : debugging info is logged in ./mcbot.log
+                 without -O  : debugging info is logged in trace.log
+                 -b|--borg   : include mcborg functionality
                  -t|--testing: use test login data from logintestdata.py
                  -h|--help   : show this help message
 in windows:
@@ -64,16 +63,36 @@ def is_empty(text):
     """
     """
     return re_empty.match(text) and True or False
-    
-tells_file = file('tell.log', 'a')
-def tell_logger(tell):
-    tells_file.write(time.strftime('%d-%m %H:%M: ', time.localtime()) + ': ' +  tell)
-    tells_file.flush()
 
+import logging
+
+tell_logger = logging.getLogger('tell_logger')
+tell_handler = logging.FileHandler('tell.log')
+tell_handler.setLevel(logging.INFO)
+tell_format = logging.Formatter('%(asctime)s %(message)s')
+tell_handler.setFormatter(tell_format)
+tell_logger.addHandler(tell_handler)
+tell_logger.setLevel(logging.INFO)
+tell_logger.__call__ = tell_logger.info
+
+trace_logger = logging.getLogger('trace_logger')
+trace_handler = logging.FileHandler('trace.log')
+trace_format = logging.Formatter('%(asctime)s %(module)s %(lineno)d %(levelname)s %(message)s')
+trace_handler.setFormatter(trace_format)
+trace_handler.setLevel(logging.DEBUG)
+stderr_handler = logging.StreamHandler(sys.stderr)
+stderr_handler.setLevel(logging.ERROR)
+trace_logger.addHandler(trace_handler)
+trace_logger.addHandler(stderr_handler)
+trace_logger.setLevel(logging.DEBUG)
+    
 class Log(object):
     """
     Warning: use \n at the end of a line, not at the beginning, or the last line gets
     stuck in the buffer!
+    This class is used only for logging the results of a batchrun.
+    Such runs are normally short-lived, and the logfile can be closed and disposed of
+    when batchrun ends.
     """
     def __init__(self, location):
         self.buf = ''
@@ -91,19 +110,6 @@ class Log(object):
     def close(self):
         self.errors.close()
 
-errors = Log('mcbot.log')
-
-
-sys.stderr = errors
-# sys.stdout = errors
-
-def printerr(msg):
-    if __debug__:
-        sys.stderr.write('%s\n' % msg)
-
-if __debug__:
-    import instrumentation as instr
-
 class MCBot(icsbot.IcsBot):
     """
     """
@@ -111,12 +117,6 @@ class MCBot(icsbot.IcsBot):
         super(MCBot, self).__init__(qtell_dummy=True, unmatched_log=None, tell_logger=tell_logger)
         self._tsn = 0
 
-        """
-        Compound Commands:
-        Non-fics commands specific for this bot.
-        Usually consist of a chain of fics commands, passing the results along
-        and combining them.
-        """
         self._compcomms = {
 
             'batchrun': (self.do_batchrun,           # method to register
@@ -127,9 +127,31 @@ class MCBot(icsbot.IcsBot):
             'whatson' : (self.do_whatson,
                          'inchannel 177',
                          self.whatson_parse_inchannel,
-                         lambda usr, tags: True)
-            }
+                         lambda usr, tags: True),
 
+            '+borg' : (self.do_plusborg,
+                       '',
+                       None,
+                       lambda usr, tags: str(usr).lower() in [me, admin]),
+
+            '-borg' : (self.do_minusborg,
+                       '',
+                       None,
+                       lambda usr, tags: str(usr).lower() in [me, admin]),
+
+            '=borg' : (self.do_equalsborg,
+                       '',
+                       None,
+                       lambda usr, tags: str(usr).lower() in [me, admin]),
+            }
+        """
+        Compound Commands:
+        Non-fics commands specific for this bot.
+        Usually consist of a chain of fics commands, passing the results along
+        and combining them.
+        """
+
+        self._tracker = {}
         """
         _tracker is a dict, used to keep track of ongoing batchruns.
         The keys are batchids, value is another dict with (key, value) = (tsn, True)
@@ -138,26 +160,27 @@ class MCBot(icsbot.IcsBot):
         all commands of a batch have terminated, and the log file for that
         batch can be closed.
         """
-        self._tracker = dict()
 
         # send pre-login commands
         self.send('set style 12')
         self.send('set seek 0')
         ## self.send('set interface MonkeyClub Bot(mcbot)')
         self.send('set interface BabasChess 4.0 (build 12274)')
-        self.send('+ch 85')
-        self.send('+ch 101')
-        self.send('+ch 177')
-        # bot.send('tell 177 Remember to "set noescape 0" before you start a tl game..')
-        # bot.send('tell 177 or you risk forfeit by disconnection.')
 
-        # Warning:
-        # Order of registration is important
+        self.join_channels = ['85', '101', '177']
+        for channel in self.join_channels:
+            self.send('+ch %s' % channel)
 
-        self.channel_loggers = {'85': Log('channel85_tells.log'),
-                                '101': Log('channel101_tells.log'),
-                                '177': Log('channel177_tells.log'),
-                                }
+        self.log_channels =['85', '101', '177']
+        self.channel_loggers = {}
+        for channel in self.log_channels:
+            logger = logging.getLogger('channel_%s_logger' % channel)
+            handler = logging.FileHandler('channel_%s_tell.log' % channel)
+            format = logging.Formatter('%(asctime)s %(message)s')
+            handler.setFormatter(format)
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+            self.channel_loggers[channel] = logger.info
 
         self.reg_comm('(?P<usr>[a-zA-Z]{3,17})(?:\([A-Z]+\))*\((?P<channel>[0-9]{1,3})\): (?P<message>.*)', self.respond_channel_tell)
 
@@ -173,13 +196,15 @@ class MCBot(icsbot.IcsBot):
         
         # timed commands
         t = time.time()
-        self.timer(t + 60 * 5, self.timer01, t)
+        self.timer(t + 60 * 60 * 2, self.timer01, t)
         # keep the connection with freechess server alive
         self.timer(t + 1, self.keep_alive, t)
 
         if borg:
             import mcborg
-            self.myborg = mcborg.mcborg() 
+            self.myborg = mcborg.mcborg()
+            self.borg_channels = ['177']
+            self.borg_handles = ['x']
         
     def get_tsn(self):
         return self._tsn
@@ -205,14 +230,10 @@ class MCBot(icsbot.IcsBot):
     
 
     def track_batch(self, batchid):
-        # printerr(' > track_batch')
-        # printerr('batchid=%s; _tracker=%s' % (batchid, self._tracker))
         self._tracker[batchid] = dict()
         return self._tracker[batchid]
 
     def track_batch_trans(self, batchid, tsn):
-        # printerr(' > track_batch_trans')
-        # printerr('batchid=%s; tsn=%s;_tracker=%s' % (batchid, tsn, self._tracker))
         d = self._tracker.get(batchid, None)
         if not d:
             d = self.track_batch(batchid)
@@ -220,43 +241,24 @@ class MCBot(icsbot.IcsBot):
         d[tsn] = True
 
     def untrack_batch_trans(self, batchid, tsn):
-        # printerr(' > untrack_batch_trans')
-        # printerr('batchid=%s; tsn=%s;_tracker=%s' % (batchid, tsn, self._tracker))
         d = self._tracker.get(batchid, None)
         assert( d, 'untrack tsn: batchid not in tracker') 
-        printerr('d=%s' % str(d))
         assert( tsn in d, 'untrack tsn: tsn not in tracker')
         del d[tsn]
-        printerr('batchid=%s; tsn=%s;_tracker=%s' % (batchid, tsn, self._tracker))
 
     def untrack_batch(self, batchid):
-        # printerr(' > untrack_batch')
-        # printerr('batchid=%s; _tracker=%s' % (batchid, self._tracker))
         d = self._tracker.get(batchid, None)
         assert( d, 'untrack batch: batchid not in tracker') 
         assert( len(d) == 0, 'untrack batch: active transactions')
         del self._tracker[batchid]
-        printerr('batchid=%s; _tracker=%s' % (batchid, self._tracker))
+        trace_logger.debug('batchid=%s; _tracker=%s' % (batchid, self._tracker))
 
     def track_any_active_trans(self, batchid):
-        # printerr('batchid=%s; _tracker=%s' % (batchid, self._tracker))
-        # printerr(' > track_active_trans')
         d = self._tracker.get(batchid, None)
         assert( d, 'untrack batch: batchid not in tracker') 
         return len(d)
 
     # general usage methods
-
-    # def execute(self, command, handler, *args, **kwargs):
-    #     """Override parent execute method to make sure that any command
-    #     executed in batch gets tracked.
-    #     """
-    #     printerr('> execute')
-    #     batchid = kwargs.get('batchid', None)
-    #     if batchid:
-    #         self.track_batch_trans(batchid, kwargs.get('tsn', None))
-
-    #     super().execute(self, command, handler, *args, **kwargs)
 
     def format_kwargs(self, kwargs):
         b = kwargs.get('blogger', None)
@@ -271,48 +273,45 @@ class MCBot(icsbot.IcsBot):
             b)
 
     def do_log(self, logger, message):
-        printerr('(L)-%s' % message)
+        trace_logger.debug('(L)-%s' % message)
         logger.write('%s\n' % message)
         
     def do_tell(self, recipient, message):
-        printerr('(T)-(%s): %s' % (recipient, message))
+        trace_logger.debug('(T)-(%s): %s' % (recipient, message))
         self.send('tell %s %s' % (recipient, message))
 
     def respond_to_anything(self,matches):
-        # printerr(' > respond_to_anything')
         message = matches.group('message')
-        # printerr('usr = %s; message = %s' % (usr, message))
-        # return 'tell %s %s' % (admin, matches.group(0))
         self.alogger.write('%s\n' % message)
 
     def respond_channel_tell(self, matches):
-        # printerr(' > respond_channel_tell')
         usr = matches.group('usr')
         channel = matches.group('channel')
         message = matches.group('message')
 
         usr_channel = '%s(%s)' % (usr, channel)
         if channel in self.channel_loggers.keys():
-            self.channel_loggers[channel].write('%s%s\n' % (usr_channel.ljust(22), message))
+            self.channel_loggers[channel]('%s%s' % (usr_channel.ljust(22), message))
 
         if usr == 'TeamLeague' and channel == '101' and message.startswith('Game started:'):
             # if message.find('Monkey') > -1:
             self.send('tell 177 %s' % message)
 
-        if borg:
-            if usr.lower() in ('zulugodetia', 'kirany', 'dermandarin', 'xaosfiftytwo', 'cjldx'):
-                reply = self.myborg.reply(message)
-                if not re_empty.match(reply):
-                    self.send('tell 177 %s' % reply)
-                
-        # return 'tell %s %s' % (admin, matches.group(0))
+        if borg and not usr == me:
+            if channel in self.borg_channels:
+                if 'all' in self.borg_handles or usr.lower() in self.borg_handles:
+                    reply = self.myborg.reply(message)
+                    retries = 3
+                    while retries > 0:
+                        if not re_empty.match(reply):
+                            self.send('tell 177 %s' % reply)
+                            break
+                        else: 
+                            retries -= 1
 
     def respond_personal_tell(self, matches):
-        printerr(' > respond_personal_tell')
         usr = matches.group('usr')
         message = matches.group('message')
-        # printerr('usr = %s; message = %s' % (usr, message))
-        # return 'tell %s %s' % (admin, matches.group(0))
         return None
 
     def handle_response(self, data, args, kwargs):
@@ -321,9 +320,7 @@ class MCBot(icsbot.IcsBot):
         Warning!
         responses to timed commands are handled here also, but arent logged.
         """
-        printerr(' > handle_response')
-        printerr('(R)<-%s' % self.format_kwargs(kwargs))
-        printerr('data = %s' % (repr(data)))
+        trace_logger.debug('(R)<-%s' % self.format_kwargs(kwargs))
         batchid = kwargs.get('batchid', None)
         blogger = kwargs.get('blogger', None)
         assert(batchid, 'no batchid?')
@@ -335,21 +332,19 @@ class MCBot(icsbot.IcsBot):
             if blogger:
                 self.do_log(blogger, '%s' % line)
             else:
-                printerr(line)
+                trace_logger.debug(line)
 
         self.untrack_batch_trans(batchid, kwargs.get('tsn'))
 
         if self.track_any_active_trans(batchid) == 0:
             self.untrack_batch(batchid)
             if blogger:
-                printerr('close log file now..')
+                trace_logger.debug('close log file now..')
                 blogger.close()
+                # blogger.shutdown()
+                del blogger
                     
-        printerr('---')
-
-    def submit_batch_commands(self, lines, usr, blogger):
-        printerr(' > submit_batch_commands')
-
+    def submit_batch_commands(self, lines, usr, logger):
         usr = str(usr)
         timestamp = time.time()
         batchid = None
@@ -362,16 +357,16 @@ class MCBot(icsbot.IcsBot):
             compcomm = line.split()[0]
             if self.is_compcomm(compcomm):
                 method, command, callback, privilege_check = self.get_compcomm_definition(compcomm)
-                if blogger:
-                    self.do_log(blogger, 'submit %s' % line)
+                if logger:
+                    sef.do_log(logger, 'submit %s' % line)
             else:
                 compcomm = None
                 callback = self.handle_response
             
-            if blogger:
-                self.do_log(blogger, 'submit %s' % command)
+            if logger:
+                self.do_log(logger, 'submit %s' % command)
 
-            printerr('(S)->tsn=%d; batchid=%d; compcomm=%s; command=%s' %
+            trace_logger.debug('(S)->tsn=%d; batchid=%d; compcomm=%s; command=%s' %
                      (tsn, batchid, compcomm, command))
 
             self.track_batch_trans(batchid, tsn)
@@ -383,23 +378,27 @@ class MCBot(icsbot.IcsBot):
                           'tsn': tsn,
                           'timestamp': timestamp,
                           'batchid': batchid,
-                          'blogger': blogger,
+                          'blogger': logger,
                           'compcomm': compcomm,
                           'command': command})
 
-    def handle_batch_file(self, filename, usr, logging):
+    def handle_batch_file(self, filename, usr, log):
         """
         """
-        # printerr("reading commands from file '%s'" % filename)
-        printerr(' > handle_batch_file')
         try: 
             f = None
             f = open(filename, 'rU')
-            if logging:
-                blogger = Log(filename + '.log')
-                self.do_log(blogger, 'submit commands from file \'%s\'' % filename) 
+            if log:
+                # logger = logging.getLogger(filename)
+                # handler = logging.FileHandler('%s.log' % filename)
+                # format = logging.Formatter('%asctime)s %(message)s')
+                # handler.setFormatter(format)
+                # logger.addHandler(handler)
+                # logger.setLevel(logging.INFO)
+                logger = Log(filename + '.log')
+                # logger.info('submit commands from file \'%s\'' % filename) 
             else:
-                blogger = None
+                logger = None
             lines = []
             for line in f.readlines():
                 line = line.rstrip()
@@ -411,13 +410,10 @@ class MCBot(icsbot.IcsBot):
                     continue
                 lines.append(line)
             
-            self.submit_batch_commands(lines, usr, blogger)
+            self.submit_batch_commands(lines, usr, logger)
 
         except IOError, (errno, strerror):
-            printerr("Error reading file %s" % filename)
-            printerr("I/O error(%s): %s" % (errno, strerror))
-        # except:
-        #     printerr("Unexpected error: %s" % sys.exc_info()[0])
+            trace_logger.error("Error reading batchfile.", exc_info=True)
         finally:
             if f:
                 f.close()
@@ -428,10 +424,6 @@ class MCBot(icsbot.IcsBot):
         Executes all fics commands in 'file' in batch, and logs
         the results in file.log
         """
-        printerr(' > do_batchrun')
-        # printerr('usr = %s%s; command = %s %s' % 
-        #          (str(usr).lower(), str(tag), 'batchrun', str(args)))
-        
         arglist=str(args).split()
         logging = True
         if arglist[0] in ['-log', '-nolog']:
@@ -439,15 +431,14 @@ class MCBot(icsbot.IcsBot):
                 logging = False
             arglist = arglist[1:]
         if len(arglist) == 0:
-            printerr('** Usage: batchrun [ -log|-nolog ] file [file...]')
+            trace_logger.info('** Usage: batchrun [ -log|-nolog ] file [file...]')
         else:
             for filename in arglist:
                 self.handle_batch_file(filename, str(usr), logging)
-                printerr("-----")
+                trace_logger.debug("-----")
 
     def whatson_parse_inchannel(self, data, args, kwargs):
-        printerr(' > whatson_parse_inchannel')
-        printerr('(R)<-%s' % self.format_kwargs(kwargs))
+        trace_logger.debug('(R)<-%s' % self.format_kwargs(kwargs))
 
         batchid = kwargs.get('batchid', None)
         blogger = kwargs.get('blogger', None)
@@ -456,9 +447,6 @@ class MCBot(icsbot.IcsBot):
             self.untrack_batch_trans(batchid, kwargs.get('tsn'))
 
         data = data.split('\n\r')
-        # printerr('number of lines: %d' % (len(data)))
-        # for line in data:
-        #     printerr(line)
 
         re_inchan01 = re.compile(r'^Channel (?P<channel>%s):\s(?P<handles>.*)$' % r'\d{1,3}')
         re_inchan02 = re.compile(r'(%s)' % icsreg.HANDLE)
@@ -466,11 +454,8 @@ class MCBot(icsbot.IcsBot):
         for line in data:
             result=re_inchan01.findall(line)
             if result:
-                printerr('result = %s' % repr(result))
                 channel, handles = result[0]
                 result=re_inchan02.findall(handles)
-                printerr('channel = %s' % (channel))
-                printerr('handles = %s' % repr(result))
                 usr = kwargs.get('usr')
                 timestamp = time.time()
                 compcomm = kwargs.get('compcomm')
@@ -480,7 +465,7 @@ class MCBot(icsbot.IcsBot):
                     tsn = self.get_new_tsn()
                     command = 'finger %s' % handle
             
-                    printerr('(S)->tsn=%d; batchid=%s; compcomm=%s; command=%s' %
+                    trace_logger.debug('(S)->tsn=%d; batchid=%s; compcomm=%s; command=%s' %
                              (tsn, batchid, compcomm, command))
 
                     if batchid:
@@ -498,18 +483,18 @@ class MCBot(icsbot.IcsBot):
                                   'blogger': blogger
                                   })
             else:
-                printerr(line)
+                trace_logger.debug(line)
 
         if batchid:
             if not self.track_any_active_trans(batchid):
                 self.untrack_batch(batchid)
                 if blogger:
-                    printerr('close log file now..')
+                    trace_logger.debug('close log file now..')
                     blogger.close()
         
     def whatson_parse_finger(self, data, args, kwargs):
-        printerr(' > whatson_parse_finger')
-        printerr('(R)<-%s' % self.format_kwargs(kwargs))
+        trace_logger.debug('in whatson_parse_finger')
+        trace_logger.debug('(R)<-%s' % self.format_kwargs(kwargs))
 
         batchid = kwargs.get('batchid', None)
         blogger = kwargs.get('blogger', None)
@@ -528,11 +513,9 @@ class MCBot(icsbot.IcsBot):
                 continue
             if re3.match(line):
                 handle = re3.match(line).group(1)
-                # print 'handle = %s' % handle
                 continue
             if re1.match(line):
                 message = re1.match(line).group(1)
-                # print 'message = %s' % message
                 break
             if re2.match(line):
                 break
@@ -549,7 +532,7 @@ class MCBot(icsbot.IcsBot):
         if batchid:
             if not self.track_any_active_trans(batchid):
                 self.untrack_batch(batchid)
-                printerr('close log file now..')
+                trace_logger.debug('close log file now..')
                 blogger.close()
                 
     def do_whatson(self, usr, args, tag):
@@ -558,14 +541,12 @@ class MCBot(icsbot.IcsBot):
         some information and show the result in a private tell to the user that
         submitted the 'whatson' command.
         """
-        printerr(' > do_whatson')
-        # printerr('usr = %s%s; command = %s %s' % 
-        #          (str(usr).lower(), str(tag), 'whatson', str(args)))
+        # trace_logger.debug('in do_whatson')
         compcomm = 'whatson'
         f, command, callback, privilege_check = self.get_compcomm_definition(compcomm)
         tsn = self.get_new_tsn()
 
-        printerr('(S)->tsn=%d; compcomm=%s; command=%s' %
+        trace_logger.debug('(S)->tsn=%d; compcomm=%s; command=%s' %
                  (tsn, compcomm, command))
 
         self.execute(command, 
@@ -578,38 +559,48 @@ class MCBot(icsbot.IcsBot):
                       'command': command
                       })
 
-        printerr("-----")
-
     def timer01(self, run_time):
-        printerr(' > timer01')
-        repeat = 60 * 60 * 2
+        repeat = 60 * 60 * 3
         timestamp = time.time()
         self.do_batchrun(me, '-nolog timer1', '')
         self.timer(timestamp + repeat, self.timer01, timestamp + repeat)
 
     def keep_alive(self, run_time):
-        printerr(' > keep_alive')
-        repeat = 60 * 55
+        repeat = 60 * 45
         timestamp = time.time()
         self.do_batchrun(me, '-nolog keep_alive', '')
         self.timer(timestamp + repeat, self.keep_alive, timestamp + repeat)
 
+    def do_plusborg(self, usr, args, tag):
+        trace_logger.debug('in do_plusborg()')
+        trace_logger.debug('usr=%s; args=%s; tag=%s' % (usr, args, tag))
+        self.borg_handles.append(args)
+
+    def do_minusborg(self, usr, args, tag):
+        trace_logger.debug('in do_minusborg()')
+        trace_logger.debug('usr=%s; args=%s; tag=%s' % (usr, args, tag))
+        self.borg_handles.remove(args)
+
+    def do_equalsborg(self, usr, args, tag):
+        trace_logger.debug('in do_equalsborg()')
+        trace_logger.debug('usr=%s; args=%s; tag=%s' % (usr, args, tag))
+        self.send('tell %s %s' % (usr, repr(self.borg_handles)))
  
 # Main loop in case of disconnections, just recreating the bot right now.
 # Should not actually be necessary.
 while True:
     if __debug__:
+        import instrumentation as instr
         m0 = instr.memory()
         r0 = instr.resident()
         s0 = instr.stacksize()
         
-        printerr('vitual memory usage  = %d' % m0)
-        printerr('real memory usage    = %d' % r0)
-        printerr('stack size           = %d' % s0)
+        trace_logger.debug('virtual memory usage  = %d' % m0)
+        trace_logger.debug('real memory usage     = %d' % r0)
+        trace_logger.debug('stack size            = %d' % s0)
 
     bot = MCBot(qtell_dummy=True, tell_logger=tell_logger)
 
-    # 
     icsbot.status.Status(bot)
     usrs = bot['usrs']
 
@@ -618,44 +609,44 @@ while True:
         r1 = instr.resident(since=r0)
         s1 = instr.stacksize(since=s0)
         
-        printerr('vitual memory usage increment = %d' % m1)
-        printerr('real memory usage increment   = %d' % r1)
-        printerr('stack size increment          = %d' % s1)
+        trace_logger.debug('virtual memory usage increment = %d' % m1)
+        trace_logger.debug('real memory usage increment    = %d' % r1)
+        trace_logger.debug('stack size increment           = %d' % s1)
 
     try:
         bot.connect(me, password)
     except icsbot.InvalidLogin, msg:
-        print msg
         if str(msg) == 'Handle in use.':
-            print 'Restarting'
+            trace_logger.error(str(msg), exc_info=True)
+            trace_logger.error('Restarting')
             time.sleep(3)
             continue
-        print 'Quitting.'
+        trace_logger.critical('Quitting.')
         break
     except icsbot.ConnectionClosed, msg:
-        print 'Connection was lost, because:', msg
-        print 'Restarting'
+        trace_logger.error('Connection was lost.', exc_info=True)
+        trace_logger.error('Restarting.')
         time.sleep(3)
         continue
     except icsbot.socket.error, msg:
-        print 'Socket error:', msg
-        print 'Restarting'
+        trace_logger.error('Socket error.', exc_info=True)
+        trace_logger.error('Restarting.')
         time.sleep(3)
         continue
     
-    print 'Connected to FICS.'
+    trace_logger.info('Connected to FICS.')
 
     try:
         bot.run()
     except icsbot.ConnectionClosed, msg:
         if str(msg) == 'Someone logged in as me.':
-            print 'Connection was lost, because someone logged in as me.'
-            print 'Quitting.'
+            trace_logger.critical('Connection was lost because someone logged in as me.')
+            trace_logger.critical('Quitting.')
             break
-        print 'Connection was lost, because:', msg
-        print 'Restarting'
+        trace_logger.error('Connection was lost, because:', exc_info=True)
+        trace_logger.error('Restarting')
     except icsbot.socket.error, msg:
-        print 'Socket error:', msg
-        print 'Restarting'
+        trace_logger.error('Socket error:', exc_info=True)
+        trace_logger.error('Restarting')
 
     time.sleep(3)
